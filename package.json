@@ -1,0 +1,14 @@
+{
+  "name": "bwinf24",
+  "module": "index.ts",
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "type": "module",
+  "dependencies": {
+    "@napi-rs/canvas": "^0.1.55"
+  }
+}
