@@ -1,4 +1,4 @@
-# bwinf24
+# bwinf43
 ## Challenge 4 - Krocket
 
 To run the code, follow the instructions
