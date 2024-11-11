@@ -1,15 +1,41 @@
 # bwinf24
+## Challenge 4 - Krocket
 
-To install dependencies:
+To run the code, follow the instructions
+
+<hr>
+
+## 1. Install the Bun JavaScript Runtime
+
+### Windows
+```bash
+powershell -c "irm bun.sh/install.ps1 | iex"
+```
+
+### Linux & macOS
+```bash
+curl -fsSL https://bun.sh/install | bash
+```
+
+## 2. Install dependencies
 
 ```bash
 bun install
 ```
 
-To run:
+## 3. Build the executable file
 
 ```bash
-bun run index.ts
+bun build ./index.ts --compile
 ```
 
-This project was created using `bun init` in bun v1.1.17. [Bun](https://bun.sh) is a fast all-in-one JavaScript runtime.
+## 4. Run it
+
+```
+.\index.exe <base input path> <scaling>
+```
+
+Example:
+```bash
+.\index.exe .\krocket0 1
+```

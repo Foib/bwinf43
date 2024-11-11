@@ -1,6 +1,19 @@
 import { Krocket } from "./aufgabe4";
 
-const krocket1 = new Krocket("./krocket2.txt");
-krocket1.parseComplete.then(() => {
-  krocket1.draw(true, "./krocket2.png");
+if (process.argv.length < 3) {
+  console.error("No base file name provided");
+  process.exit(1);
+}
+
+let scale = 1;
+if (process.argv.length > 3) {
+  scale = parseFloat(process.argv[3]);
+}
+
+const fileBaseKrocket = Bun.argv[2];
+const krocket = new Krocket(fileBaseKrocket + ".txt");
+krocket.parseComplete.then(() => {
+  krocket.draw(true, fileBaseKrocket + ".png", {
+    scale,
+  });
 });

@@ -1,21 +1,47 @@
 import { promises } from "fs";
 import { join } from "path";
 import { createCanvas } from "@napi-rs/canvas";
-import { cirlceFill, readFileLines } from "../utils";
+import {
+  cirlce,
+  cirlceFill,
+  Line,
+  readFileLines,
+  getLinesIntersectionPoint,
+  lineChangeLength,
+  linesIntersect,
+  Point,
+  pointDistanceToLine,
+  getCircleLineIntersectionPoints,
+  getCircleCircleIntersectionPoints,
+  Circle,
+  hslToHex,
+  lineChangeLengthFromCenter,
+} from "../utils";
 
-type Position = { x: number; y: number };
-type Goal = { p1: Position; p2: Position };
+type DrawOptions = {
+  scale: number;
+};
 
 export class Krocket {
-  private _start: Position = { x: 0, y: 0 };
-  private _goals: Goal[] = [];
+  private _start: Point = new Point(0, 0);
+  private _goals: Line[] = [];
+  private _radius: number = 0;
   private _parseComplete: Promise<void>;
-  private _solveLine: { p1: Position; p2: Position } | null = null;
+  private _testLines: Line[] = [];
+  private _solveLine: Line | null = null;
+  private _solutionExists: boolean = false;
+  private _maxX: number = 0;
+  private _maxY: number = 0;
+  private _longestLength: number = 0;
 
   constructor(filePath: string) {
     this._parseComplete = new Promise((resolve) => {
       this._parseFile(filePath, resolve);
     });
+  }
+
+  public get solutionExists(): boolean {
+    return this._solutionExists;
   }
 
   private _parseFile(
@@ -29,18 +55,31 @@ export class Krocket {
       (line) => {
         if (!line) return;
 
-        const [x, y] = line.split(" ").map(Number);
-
         if (firstLine) {
-          this._start = { x, y };
+          const [_, radius] = line.split(" ").map(Number);
+          this._radius = radius;
           firstLine = false;
         } else {
           const [x1, y1, x2, y2] = line.split(" ").map(Number);
-          this._goals.push({ p1: { x: x1, y: y1 }, p2: { x: x2, y: y2 } });
+          this._goals.push(
+            new Line(new Point(x1, y1), new Point(x2, y2), "Goal")
+          );
         }
       },
       () => {
-        console.log(this._goals);
+        this._maxX = Math.max(
+          this._start.x,
+          ...this._goals.map((goal) => Math.max(goal.p1.x, goal.p2.x))
+        );
+
+        this._maxY = Math.max(
+          this._start.y,
+          ...this._goals.map((goal) => Math.max(goal.p1.y, goal.p2.y))
+        );
+
+        this._longestLength =
+          Math.sqrt(Math.pow(this._maxX, 2) + Math.pow(this._maxY, 2)) * 2;
+
         this.solve();
         resolve();
       }
@@ -48,108 +87,246 @@ export class Krocket {
   }
 
   private solve() {
-    const farthestGoal = this.getFarthestGoal();
+    // Algorithm:
+    // 1. Select the first goal (line segment)
+    // 2. Get a line segment from center of selected goal to the outer most point of the goal where the ball can pass through
+    //    The outer most point is calculated by passing a line through one end of the goal,
+    //    then drawing a circle with diameter of the distance between start and end of the goal on the mid point of that distance,
+    //    then drawing a circle with radius of the ball on the end of the goal,
+    //    the intersection point of these two circles is the outer most point
+    // 3. Extend the line segment to the longest possible length in both directions but stay within the bounds of the canvas
+    // 4. Check all goals for intersection with the checking line and check if the ball can pass through the goal
+    //    If all goals intersect and the ball can pass through the goal ->
+    //      5. Intersecting line exists
+    //    If not all goals intersect or the ball can not pass through the goal ->
+    //      6. Stop at first goal that does not intersect and select it
+    //      7. Get a line segment from starting point through the end of the selected goal which is nearest to previous check line
+    //      8. Repeat from step 4. until starting goal is reached -> No intersecting line exists
 
-    if (!farthestGoal) return;
+    let startGoalIndex = 0;
+    let goalIndex = startGoalIndex;
+    let first = true;
+    let checkLine: Line | null = null;
 
-    const goalMidpoint: Position = {
-      x: (farthestGoal.p1.x + farthestGoal.p2.x) / 2,
-      y: (farthestGoal.p1.y + farthestGoal.p2.y) / 2,
-    };
+    // 1.
+    const selectedGoal = this._goals[goalIndex];
+    const nextGoal = this._goals[(goalIndex + 1) % this._goals.length];
 
-    this._solveLine = { p1: this._start, p2: goalMidpoint };
-  }
+    // 2.
+    let goalPost = nextGoal.p1;
 
-  private getFarthestGoal() {
-    let farthestGoal: Goal | null = null;
-    let farthestDistance = 0;
+    let lineFromGoalCenterToPost = new Line(selectedGoal.center(), goalPost);
 
-    for (let i = 0; i < this._goals.length; i++) {
-      const goal = this._goals[i];
-      const goalMidpoint: Position = {
-        x: (goal.p1.x + goal.p2.x) / 2,
-        y: (goal.p1.y + goal.p2.y) / 2,
-      };
-      const distance = Math.sqrt(
-        Math.pow(this._start.x - goalMidpoint.x, 2) +
-          Math.pow(this._start.y - goalMidpoint.y, 2)
-      );
+    let checkCircle = new Circle(
+      lineFromGoalCenterToPost.center(),
+      lineFromGoalCenterToPost.length() / 2
+    );
+    let ballCollisionCircle = new Circle(goalPost, this._radius);
 
-      if (distance > farthestDistance) {
-        farthestDistance = distance;
-        farthestGoal = goal;
+    let circleIntersections = getCircleCircleIntersectionPoints(
+      checkCircle,
+      ballCollisionCircle
+    );
+    if (circleIntersections.length === 0) {
+      throw new Error("No intersection found");
+    }
+
+    let nextGoalOuterMostPoint =
+      new Line(circleIntersections[0], nextGoal.center()).length() <
+      new Line(circleIntersections[1], nextGoal.center()).length()
+        ? circleIntersections[0]
+        : circleIntersections[1];
+
+    // 3.
+    checkLine = new Line(selectedGoal.center(), nextGoalOuterMostPoint);
+
+    this._testLines.push(checkLine);
+
+    while (true) {
+      // 4.
+      this._solutionExists = true;
+      for (
+        let i = (goalIndex + 1) % this._goals.length;
+        i < this._goals.length;
+        i++
+      ) {
+        const goal = this._goals[i];
+        const intersectionPoint = getLinesIntersectionPoint(checkLine, goal);
+
+        if (
+          !intersectionPoint ||
+          new Line(intersectionPoint, goal.p1).length() >= this._radius ||
+          new Line(intersectionPoint, goal.p2).length() >= this._radius
+        ) {
+          this._solutionExists = false;
+
+          let goalPost = goal.p2;
+          if (
+            pointDistanceToLine(goal.p1, checkLine) <=
+            pointDistanceToLine(goal.p2, checkLine)
+          ) {
+            goalPost = goal.p1;
+          }
+
+          lineFromGoalCenterToPost = new Line(selectedGoal.center(), goalPost);
+
+          checkCircle = new Circle(
+            lineFromGoalCenterToPost.center(),
+            lineFromGoalCenterToPost.length() / 2
+          );
+          ballCollisionCircle = new Circle(goalPost, this._radius);
+
+          circleIntersections = getCircleCircleIntersectionPoints(
+            checkCircle,
+            ballCollisionCircle
+          );
+          if (circleIntersections.length === 0) {
+            throw new Error("No intersection found");
+          }
+
+          nextGoalOuterMostPoint =
+            new Line(circleIntersections[0], goal.center()).length() <
+            new Line(circleIntersections[1], goal.center()).length()
+              ? circleIntersections[0]
+              : circleIntersections[1];
+
+          checkLine = new Line(selectedGoal.center(), nextGoalOuterMostPoint);
+          lineChangeLengthFromCenter(checkLine, this._longestLength * 2);
+
+          this._testLines.push(checkLine);
+          break;
+        }
+      }
+
+      console.log("Checking goal", goalIndex);
+
+      first = false;
+      goalIndex = (goalIndex + 1) % this._goals.length;
+
+      if ((goalIndex === startGoalIndex && !first) || this._solutionExists) {
+        break;
       }
     }
 
-    return farthestGoal;
+    if (this._solutionExists) {
+      this._solveLine = checkLine;
+      console.log("Solution exists");
+    } else {
+      console.log("No solution exists");
+    }
   }
 
-  public async draw(drawSolve: boolean, outPath: string) {
+  public async draw(
+    drawSolve: boolean,
+    filePath: string,
+    options: DrawOptions = { scale: 1 }
+  ) {
     const padding = 10;
-    const maxX = Math.max(
-      this._start.x,
-      ...this._goals.map((goal) => Math.max(goal.p1.x, goal.p2.x))
-    );
-    const maxY = Math.max(
-      this._start.y,
-      ...this._goals.map((goal) => Math.max(goal.p1.y, goal.p2.y))
-    );
 
-    const canvas = createCanvas(maxX + padding, maxY + padding);
+    const canvas = createCanvas(
+      (this._maxX + padding) * options.scale,
+      (this._maxY + padding) * options.scale
+    );
     const ctx = canvas.getContext("2d");
 
-    ctx.fillStyle = "black";
-    ctx.fillRect(0, 0, 500, 500);
+    ctx.fillStyle = "#808080";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    cirlceFill(
-      ctx,
-      this._start.x + padding / 2,
-      this._start.y + padding / 2,
-      3,
-      "blue"
-    );
-
-    ctx.strokeStyle = "white";
-    ctx.lineWidth = 2;
     this._goals.forEach((goal) => {
+      ctx.strokeStyle = "#000000";
+      ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.moveTo(goal.p1.x + padding / 2, goal.p1.y + padding / 2);
-      ctx.lineTo(goal.p2.x + padding / 2, goal.p2.y + padding / 2);
+      ctx.moveTo(
+        (goal.p1.x + padding / 2) * options.scale,
+        (goal.p1.y + padding / 2) * options.scale
+      );
+      ctx.lineTo(
+        (goal.p2.x + padding / 2) * options.scale,
+        (goal.p2.y + padding / 2) * options.scale
+      );
       ctx.stroke();
 
-      cirlceFill(
+      ctx.lineWidth = 1;
+      cirlce(
         ctx,
-        goal.p1.x + padding / 2,
-        goal.p1.y + padding / 2,
-        2,
-        "red"
+        (goal.p1.x + padding / 2) * options.scale,
+        (goal.p1.y + padding / 2) * options.scale,
+        (this._radius / 2) * options.scale,
+        "#ff0000"
       );
-      cirlceFill(
+      cirlce(
         ctx,
-        goal.p2.x + padding / 2,
-        goal.p2.y + padding / 2,
-        2,
-        "red"
+        (goal.p2.x + padding / 2) * options.scale,
+        (goal.p2.y + padding / 2) * options.scale,
+        (this._radius / 2) * options.scale,
+        "#ff0000"
       );
     });
 
-    if (drawSolve && this._solveLine) {
-      ctx.strokeStyle = "green";
-      ctx.beginPath();
-      ctx.moveTo(
-        this._solveLine.p1.x + padding / 2,
-        this._solveLine.p1.y + padding / 2
-      );
-      ctx.lineTo(
-        this._solveLine.p2.x + padding / 2,
-        this._solveLine.p2.y + padding / 2
-      );
-      ctx.stroke();
+    if (drawSolve) {
+      if (this._testLines.length > 0) {
+        ctx.strokeStyle = "#ff00ff";
+        ctx.lineWidth = 1;
+
+        let i = 0;
+        this._testLines.forEach((line) => {
+          ctx.strokeStyle = hslToHex(
+            (i / this._testLines.length) * 270,
+            100,
+            50
+          );
+
+          ctx.beginPath();
+          ctx.moveTo(
+            (line.p1.x + padding / 2) * options.scale,
+            (line.p1.y + padding / 2) * options.scale
+          );
+          ctx.lineTo(
+            (line.p2.x + padding / 2) * options.scale,
+            (line.p2.y + padding / 2) * options.scale
+          );
+          ctx.stroke();
+
+          i++;
+        });
+      }
+
+      if (this._solveLine) {
+        ctx.strokeStyle = "#00ff00";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(
+          (this._solveLine.p1.x + padding / 2) * options.scale,
+          (this._solveLine.p1.y + padding / 2) * options.scale
+        );
+        ctx.lineTo(
+          (this._solveLine.p2.x + padding / 2) * options.scale,
+          (this._solveLine.p2.y + padding / 2) * options.scale
+        );
+        ctx.stroke();
+
+        this._goals.forEach((g) => {
+          const intersectionPoint = getLinesIntersectionPoint(
+            this._solveLine!,
+            g
+          );
+
+          if (intersectionPoint) {
+            cirlceFill(
+              ctx,
+              (intersectionPoint.x + padding / 2) * options.scale,
+              (intersectionPoint.y + padding / 2) * options.scale,
+              2,
+              "#ff00ff"
+            );
+          }
+        });
+      }
     }
 
     const png = await canvas.encode("png");
 
-    await promises.writeFile(join(__dirname, outPath), png);
+    await promises.writeFile(join(__dirname, filePath), png);
   }
 
   get parseComplete() {
